@@ -1,0 +1,293 @@
+package teamcode;
+
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.Servo;
+
+import org.firstinspires.ftc.robotcore.external.ClassFactory;
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.VuforiaLocalizer;
+import org.firstinspires.ftc.robotcore.external.navigation.VuforiaLocalizer.CameraDirection;
+import org.firstinspires.ftc.robotcore.external.tfod.Recognition;
+import org.firstinspires.ftc.robotcore.external.tfod.TFObjectDetector;
+
+import java.util.List;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
+
+@TeleOp(name="Autonomous_Final")
+@Disabled
+public class Autonomous_FINAL extends OpMode
+{
+
+    //drive motors
+    private DcMotor fl;
+    private DcMotor fr;
+    private DcMotor bl;
+    private DcMotor br;
+    private DcMotor stringWheel;
+    private DcMotor xrail;
+    private boolean autograb = false;
+    private Servo intake;
+    private AngleUnit angleUnit = AngleUnit.RADIANS;
+
+
+    private static final String TFOD_MODEL_ASSET = "Skystone.tflite";
+    private static final String LABEL_FIRST_ELEMENT = "Stone";
+    private static final String LABEL_SECOND_ELEMENT = "Skystone";
+
+    //Vuforia key
+    private static final String VUFORIA_KEY =
+            "AbZUuPf/////AAAAGUmS0Chan00iu7rnRhzu63+JgDtPo889M6dNtjvv+WKxiMJ8w2DgSJdM2/zEI+a759I7DlPj++D2Ryr5sEHAg4k1bGKdo3BKtkSeh8hCy78w0SIwoOACschF/ImuyP/V259ytjiFtEF6TX4teE8zYpQZiVkCQy0CmHI9Ymoa7NEvFEqfb3S4P6SicguAtQ2NSLJUX+Fdn49SEJKvpSyhwyjbrinJbak7GWqBHcp7fGh7TNFcfPFMacXg28XxlvVpQaVNgkvuqolN7wkTiR9ZMg6Fnm0zN4Xjr5lRtDHeE51Y0bZoBUbyLWSA+ts3SyDjDPPUU7GMI+Ed/ifb0csVpM12aOiNr8d+HsfF2Frnzrj2";
+
+    private VuforiaLocalizer vuforia;
+
+    //tensor flow engine
+    private TFObjectDetector tfod;
+    private double largestDistance;
+
+    @Override
+    public void init() {
+        telemetry.addData("Status", "Initializing");
+
+        //initialize Drive
+        fl = hardwareMap.get(DcMotor.class, "fl"); //Port 3
+        fr = hardwareMap.get(DcMotor.class, "fr");
+        bl = hardwareMap.get(DcMotor.class, "bl");
+        br = hardwareMap.get(DcMotor.class, "br"); //Port 0
+
+        fl.setDirection(DcMotor.Direction.FORWARD);
+        fr.setDirection(DcMotor.Direction.REVERSE);
+        bl.setDirection(DcMotor.Direction.FORWARD);
+        br.setDirection(DcMotor.Direction.REVERSE);
+
+        //initialize stringWheel
+        stringWheel = hardwareMap.get(DcMotor.class,"string_wheel"); //Port 0
+        stringWheel.setDirection(DcMotor.Direction.REVERSE);
+
+        //initialize xRail
+        xrail = hardwareMap.get(DcMotor.class, "xRailMotor");
+        xrail.setDirection(DcMotor.Direction.FORWARD);
+
+        //initialize intake
+        intake = hardwareMap.get(Servo.class, "intakeServo");
+        intake.setPosition(0.0);
+
+        telemetry.addData("Status", "Initialized");
+    }
+
+    @Override
+    public void init_loop() {
+
+    }
+
+    @Override
+    public void start() {
+
+        initVuforia();
+
+        if (ClassFactory.getInstance().canCreateTFObjectDetector()) { //if the tfod object can be created
+            initTfod(); //initialize the tfod engine
+        } else {
+            telemetry.addData("Sorry!", "This device is not compatible with TFOD");
+        }
+
+        //activate the tfod
+        if (tfod != null) {
+            tfod.activate();
+        }
+    }
+
+    @Override
+    public void loop() {
+        // Setup a variable for each drive wheel to save power level for telemetry
+
+        //Set power for wheels based on math
+        double drive = gamepad1.left_stick_y;
+        double strafe = gamepad1.left_stick_x;
+        double turn = gamepad1.right_stick_x;
+
+        final double v1 = drive - strafe + turn;
+        final double v2 = drive + strafe - turn;
+        final double v3 = drive + strafe + turn;
+        final double v4 = drive - strafe - turn;
+
+        //Movement for the xrail string wheel
+        if (gamepad1.left_trigger > 0.1){
+            stringWheel.setPower(1);
+        } else if (gamepad1.right_trigger > 0.1){
+            stringWheel.setPower(-1);
+        } else {
+            stringWheel.setPower(0);
+        }
+
+        if (gamepad1.left_bumper){
+            xrail.setPower(-1);
+        } else if (gamepad1.right_bumper){
+            xrail.setPower(1);
+        } else {
+            xrail.setPower(0);
+        }
+
+        if (gamepad1.a) { //if a is pressed, then var becomes true. If pressed again, execution stops
+            autograb = !autograb;
+        }
+
+        if (autograb) { //if button is pressed to intake block
+            if (tfod != null) { //if the tfod engine is activated
+
+                //wait for 1.5 seconds to get the recognitions
+                try {
+                    Thread.sleep(1500);
+                }
+                catch (Exception e) {
+                    telemetry.addLine("Sorry, error with sleep function.");
+                    telemetry.update();
+                }
+
+                //get recognitions, only if they are new: if they are the same, we use getRecognitions()
+                List<Recognition> updatedRecognitions = tfod.getUpdatedRecognitions();
+
+                //if there are available recognitions
+                if (updatedRecognitions != null) {//any new information available
+
+                    //amount of recognitions
+                    telemetry.addData("Updated Recognitions:", updatedRecognitions.size());
+                    telemetry.update();
+
+                    //filtering system
+                    for (int i = 0; i < updatedRecognitions.size(); i++) {
+
+                        //this is to remove some items based on their sizes and measurements
+                        //use telemetry to read back values for filtering
+
+                        //however, because the distance to the block can change, we cannot use the same type of
+                        //filtering system
+                        /**
+                         if (updatedRecognitions.get(i).getWidth() * updatedRecognitions.get(i).getHeight() < 3 ||
+                         updatedRecognitions.get(i).getWidth() - updatedRecognitions.get(i).getHeight() < 4) {
+                         updatedRecognitions.remove(i);
+                         i--; //if we remove the element, then the next one will not be processed so we deduct the counter variable
+                         }
+
+                         */
+                        //new filtering system
+                        //if the recognized is not a skystone and not the closest (based on ratio), we filter it out
+                        Recognition r = updatedRecognitions.get(i);
+
+                        if (i == 0) { //the smallest ratio is the first recognition. Larger ratio means farther away
+                            largestDistance = r.getHeight() / r.getImageHeight();
+                        }
+                        if (!(r.getLabel().equals(LABEL_SECOND_ELEMENT) ||
+                                r.getLabel().equals(LABEL_FIRST_ELEMENT)) || r.getHeight() / r.getImageHeight() < largestDistance) {
+                            updatedRecognitions.remove(i);
+                            i--; //if we remove the element, then the next one will not be processed so we deduct the counter variable
+                        }
+                        else if (r.getHeight() / r.getImageHeight() > largestDistance && (r.getLabel().equals(LABEL_SECOND_ELEMENT) ||
+                                r.getLabel().equals(LABEL_FIRST_ELEMENT))) { //otherwise if the distance is larger than the one already stored
+                            //and the recognition is a stone, set the new distance
+                            largestDistance = r.getHeight() / r.getImageHeight();
+                        }
+                    }
+
+                    //now that we have one recognition left
+                    if (updatedRecognitions.size() == 1) {
+                        Recognition r = updatedRecognitions.get(0);
+                        double k = 1; //some constant we need to multiply by
+                        double distance = r.getWidth() / r.getImageWidth() * k;
+
+                        //to get the offset, we must use the distance and
+                        //find the horizontal translation, because from different distances
+                        //the offset could be different from what it looks like on the screen
+
+                        //double offset = imageCenter - center; //if the stone is on the right, this will be negative
+                        //if the stone is on the right, the offset will be positive
+
+                        //find the value of offset by using the relative distance
+                        //should be negative or positive based on where the block is
+                        double offset = Math.tan(r.estimateAngleToObject(angleUnit)) * distance;
+
+                        if (r.getWidth() > r.getHeight()) { //probably horizontal
+                            //first adjust horizontally
+                            //double center = (r.getLeft() + r.getRight()) / 2; //center of the recognition
+                            //double imageCenter = 0; //may be different
+                            telemetry.addData("horizontal offset:", offset);
+                            telemetry.addData("distance:", distance);
+                        }
+                        else { //if the height is greater or equal to the width, probably vertical
+                            telemetry.addData("Vertical Block, move horizontally:", offset);
+                            if (offset < 0) { //let's assume this means the block is to the left
+                                telemetry.addLine("Turn to the right");
+                            }
+                            else { //assume this means the block is to the right
+                                telemetry.addLine("Turn to the left");
+                            }
+                            telemetry.addData("Then move:", distance);
+                        }
+                    }
+                    else {
+                        telemetry.addLine("Error: More than one recognition left.");
+                    }
+
+                    //telemetry.addData("Is there a skystone detected? ", isSkystone);
+                    //telemetry.addData("Left Coordinate: ", currentCoordinate); //this will help to see which one is the skystone
+                    //ideally, should scan two to three blocks at a time
+                    //make sure to keep everything else out of the area of view, and to give time for recognition
+                }
+                telemetry.update();
+            }
+        }
+
+
+        // Send calculated power to wheels
+        fl.setPower(v1);
+        fr.setPower(v2);
+        bl.setPower(v3);
+        br.setPower(v4);
+
+        // Telemetry output
+        telemetry.addData("Power", "Left Front Power: " + v1);
+        telemetry.addData("Power", "Left Right Power: " + v2);
+        telemetry.addData("Power", "Back Left Power: " + v3);
+        telemetry.addData("Power", "Left Right Power: " + v4);
+
+        telemetry.update();
+    }
+
+    /*
+     * Code to run ONCE after the driver hits STOP
+     */
+    @Override
+    public void stop() {
+        if (tfod != null) {
+            tfod.shutdown();
+        }
+    }
+
+    //standard initialization for vuforia
+    private void initVuforia() {
+        /*
+         * Configure Vuforia by creating a Parameter object, and passing it to the Vuforia engine.
+         */
+        VuforiaLocalizer.Parameters parameters = new VuforiaLocalizer.Parameters();
+
+        parameters.vuforiaLicenseKey = VUFORIA_KEY;
+        parameters.cameraDirection = CameraDirection.BACK;
+
+        //  Instantiate the Vuforia engine
+        vuforia = ClassFactory.getInstance().createVuforia(parameters);
+
+        // Loading trackables is not necessary for the TensorFlow Object Detection engine.
+    }
+
+    //standard initialization for tfod
+    private void initTfod() {
+        int tfodMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
+                "tfodMonitorViewId", "id", hardwareMap.appContext.getPackageName());
+        TFObjectDetector.Parameters tfodParameters = new TFObjectDetector.Parameters(tfodMonitorViewId);
+        tfodParameters.minimumConfidence = 0.8; //change minimum confidence if detection does not work
+        tfod = ClassFactory.getInstance().createTFObjectDetector(tfodParameters, vuforia);
+        //this specifically loads the models for the skystone
+        tfod.loadModelFromAsset(TFOD_MODEL_ASSET, LABEL_FIRST_ELEMENT, LABEL_SECOND_ELEMENT);
+    }
+}
